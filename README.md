@@ -12,6 +12,31 @@ Cross-platform MVP for sharing server-side Chromium sessions through password-pr
 
 No `npm install` is required.
 
+## Run without installing Chrome
+
+If Node.js 22+, `wget`, and `unzip` already exist but you cannot install system packages, use the rootless portable launcher:
+
+```bash
+git clone https://github.com/un4ckn0wl3z/shared-browser.git
+cd shared-browser
+chmod +x download-chrome.sh start-portable.sh
+OWNER_PASSWORD='use-a-long-random-password' ./start-portable.sh
+```
+
+The launcher resolves the current Stable Chrome for Testing build from Google's official JSON API, downloads it with `wget`, and stores it under `.runtime/`. Later runs reuse that copy. Force a fresh download with:
+
+```bash
+./download-chrome.sh --force
+```
+
+This does not require root and does not modify system directories. Chrome is not fully static, however: the host must already provide its Linux shared-library dependencies. If it fails to start, inspect missing libraries with:
+
+```bash
+ldd .runtime/chrome-linux64/chrome | grep 'not found'
+```
+
+On ARM64, the directory is `.runtime/chrome-linux-arm64/`. If required libraries are missing and you have no package-install privileges, the practical options are asking the host administrator to provide them or running on a less minimal Linux host.
+
 ## Run on Windows
 
 ```powershell
