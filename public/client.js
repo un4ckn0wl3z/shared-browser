@@ -154,11 +154,6 @@ if (page === 'owner') {
   const viewerControls = startViewer(true, () => currentBrowserSession);
   const address = document.querySelector('#address');
   const sessionSelect = document.querySelector('#browser-session');
-  const shareTarget = document.querySelector('#share-target');
-  const githubRepositoryField = document.querySelector('#github-repository-field');
-  const syncShareTarget = () => { githubRepositoryField.hidden = shareTarget.value !== 'github'; };
-  shareTarget.addEventListener('change', syncShareTarget);
-  syncShareTarget();
   document.querySelector('#go').addEventListener('click', () => browserAction('navigate', address.value));
   address.addEventListener('keydown', (event) => { if (event.key === 'Enter') browserAction('navigate', address.value); });
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => browserAction(button.dataset.nav)));
@@ -204,19 +199,12 @@ if (page === 'owner') {
       document.querySelector('#share-result').innerHTML = `<div class="result"><strong>Share URL</strong><br><a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a><br><button id="copy-link">Copy link</button></div>`;
       document.querySelector('#copy-link').addEventListener('click', () => navigator.clipboard.writeText(result.url));
       event.target.reset(); event.target.elements.minutes.value = 30;
-      syncShareTarget();
       refreshStatus();
     } catch (error) { alert(error.message); }
   });
   async function refreshStatus() {
     try {
       const status = await api('/api/status');
-      const githubOption = shareTarget.querySelector('option[value="github"]');
-      githubOption.disabled = !status.githubConfigured;
-      githubOption.textContent = status.githubConfigured ? 'GitHub API' : 'GitHub API (not configured)';
-      if (!status.githubConfigured && shareTarget.value === 'github') { shareTarget.value = 'browser'; syncShareTarget(); }
-      if (!status.browserEnabled && status.githubConfigured && !shareTarget.dataset.initialized) { shareTarget.value = 'github'; syncShareTarget(); }
-      shareTarget.dataset.initialized = '1';
       latestSessions = status.sessions || [];
       if (!currentBrowserSession || !latestSessions.some((item) => item.id === currentBrowserSession)) currentBrowserSession = latestSessions[0]?.id || '';
       const optionSignature = latestSessions.map((item) => `${item.id}:${item.name}`).join('|');
@@ -227,14 +215,13 @@ if (page === 'owner') {
       sessionSelect.value = currentBrowserSession;
       const selected = latestSessions.find((item) => item.id === currentBrowserSession);
       if (selected?.browserUrl && document.activeElement !== address) address.value = selected.browserUrl;
-      document.querySelector('#connection').textContent = !status.browserEnabled ? 'API-only mode' : selected?.connected ? `${selected.name} connected` : 'Browser unavailable';
+      document.querySelector('#connection').textContent = selected?.connected ? `${selected.name} connected` : 'Browser unavailable';
       document.querySelector('#session-count').textContent = `${latestSessions.length}/${status.maxBrowserSessions} sessions`;
-      document.querySelector('#new-browser-session').disabled = !status.browserEnabled;
-      document.querySelector('#delete-browser-session').disabled = !status.browserEnabled || currentBrowserSession === 'default';
+      document.querySelector('#delete-browser-session').disabled = currentBrowserSession === 'default';
       document.querySelector('#shares').innerHTML = status.shares.length ? status.shares.map((share) => {
         const names = (share.guests || []).map((guest) => escapeHtml(guest.name)).join(', ');
         const people = `${share.guestCount || 0}/${status.maxGuestsPerLink} connected${names ? `: ${names}` : ''}`;
-        return `<div class="share"><strong>${escapeHtml(share.targetName || share.browserSessionName)} · ${share.mode === 'view' ? 'View only' : 'Control'}</strong><small>${share.permanent ? 'Permanent until revoked' : `Expires ${new Date(share.expires).toLocaleString()}`} · ${people}</small><div class="share-actions"><button data-copy="${escapeHtml(share.url)}">Copy</button><button class="danger" data-revoke="${escapeHtml(share.id)}">Revoke</button></div></div>`;
+        return `<div class="share"><strong>${escapeHtml(share.browserSessionName)} · ${share.mode === 'view' ? 'View only' : 'Control'}</strong><small>${share.permanent ? 'Permanent until revoked' : `Expires ${new Date(share.expires).toLocaleString()}`} · ${people}</small><div class="share-actions"><button data-copy="${escapeHtml(share.url)}">Copy</button><button class="danger" data-revoke="${escapeHtml(share.id)}">Revoke</button></div></div>`;
       }).join('') : '<span class="hint">No active links</span>';
       document.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
       document.querySelectorAll('[data-revoke]').forEach((b) => b.onclick = async () => { await api(`/api/shares/${encodeURIComponent(b.dataset.revoke)}`, { method: 'DELETE', body: '{}' }); refreshStatus(); });
@@ -274,66 +261,4 @@ if (page === 'guest') {
     await api(`/api/s/${encodeURIComponent(sessionId)}/logout`, { method: 'POST', body: '{}' }).catch(() => {});
     location.reload();
   });
-}
-
-if (page === 'github-guest') {
-  const message = document.querySelector('#github-message');
-  const issues = document.querySelector('#github-issues');
-  const presence = document.querySelector('#guest-presence');
-
-  async function refreshPresence() {
-    try {
-      const status = await api(`/api/s/${encodeURIComponent(sessionId)}/status`);
-      const names = (status.guests || []).map((guest) => guest.name).join(', ');
-      const role = mode === 'control' ? 'Editors' : 'Viewers';
-      presence.textContent = `${role} ${status.guestCount}/${status.maxGuestsPerLink}${names ? `: ${names}` : ''}`;
-    } catch {}
-  }
-
-  async function refreshGitHub() {
-    message.textContent = '';
-    try {
-      const result = await api(`/api/s/${encodeURIComponent(sessionId)}/github/overview`);
-      document.querySelector('#github-repository').textContent = result.repository.fullName;
-      document.querySelector('#github-description').textContent = result.repository.description || `${result.repository.private ? 'Private' : 'Public'} repository`;
-      issues.innerHTML = result.issues.length ? result.issues.map((issue) => `<article class="share">
-        <strong>${issue.pullRequest ? 'Pull request' : 'Issue'} #${issue.number}: ${escapeHtml(issue.title)}</strong>
-        <small>By ${escapeHtml(issue.author)} · ${issue.comments} comments · updated ${new Date(issue.updatedAt).toLocaleString()}</small>
-        ${issue.body ? `<p>${escapeHtml(issue.body.slice(0, 1200))}</p>` : ''}
-        <div class="share-actions"><button data-open-github="${escapeHtml(issue.htmlUrl)}" class="subtle">Open on GitHub</button>${mode === 'control' ? `<button data-comment="${issue.number}">Comment</button>` : ''}</div>
-      </article>`).join('') : '<span class="hint">No open issues or pull requests</span>';
-      document.querySelectorAll('[data-open-github]').forEach((button) => button.onclick = () => window.open(button.dataset.openGithub, '_blank', 'noopener'));
-      document.querySelectorAll('[data-comment]').forEach((button) => button.onclick = async () => {
-        const body = prompt(`Comment on #${button.dataset.comment}`);
-        if (!body) return;
-        try {
-          await api(`/api/s/${encodeURIComponent(sessionId)}/github/issues/${encodeURIComponent(button.dataset.comment)}/comments`, { method: 'POST', body: JSON.stringify({ body }) });
-          await refreshGitHub();
-        } catch (error) { alert(error.message); }
-      });
-    } catch (error) {
-      message.textContent = error.message;
-      issues.innerHTML = '';
-    }
-  }
-
-  const createIssue = document.querySelector('#github-create-issue');
-  if (createIssue) createIssue.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.target);
-    try {
-      await api(`/api/s/${encodeURIComponent(sessionId)}/github/issues`, { method: 'POST', body: JSON.stringify({ title: form.get('title'), body: form.get('body') }) });
-      event.target.reset();
-      await refreshGitHub();
-    } catch (error) { alert(error.message); }
-  });
-
-  document.querySelector('#github-refresh').addEventListener('click', refreshGitHub);
-  document.querySelector('#guest-logout').addEventListener('click', async () => {
-    await api(`/api/s/${encodeURIComponent(sessionId)}/logout`, { method: 'POST', body: '{}' }).catch(() => {});
-    location.reload();
-  });
-  refreshPresence();
-  refreshGitHub();
-  setInterval(refreshPresence, 2500);
 }
