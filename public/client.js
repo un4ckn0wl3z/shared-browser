@@ -31,7 +31,8 @@ if (page === 'guest-login') {
     const message = document.querySelector('#message');
     message.textContent = '';
     try {
-      await api(`/api/s/${encodeURIComponent(sessionId)}/login`, { method: 'POST', body: JSON.stringify({ password: new FormData(event.target).get('password') }) });
+      const form = new FormData(event.target);
+      await api(`/api/s/${encodeURIComponent(sessionId)}/login`, { method: 'POST', body: JSON.stringify({ name: form.get('name'), password: form.get('password') }) });
       location.reload();
     } catch (error) { message.textContent = error.message; }
   });
@@ -217,7 +218,11 @@ if (page === 'owner') {
       document.querySelector('#connection').textContent = selected?.connected ? `${selected.name} connected` : 'Browser unavailable';
       document.querySelector('#session-count').textContent = `${latestSessions.length}/${status.maxBrowserSessions} sessions`;
       document.querySelector('#delete-browser-session').disabled = currentBrowserSession === 'default';
-      document.querySelector('#shares').innerHTML = status.shares.length ? status.shares.map((share) => `<div class="share"><strong>${escapeHtml(share.browserSessionName)} · ${share.mode === 'view' ? 'View only' : 'Control'}</strong><small>${share.permanent ? 'Permanent until revoked' : `Expires ${new Date(share.expires).toLocaleString()}`} · ${share.connected ? 'connected' : 'waiting'}</small><div class="share-actions"><button data-copy="${escapeHtml(share.url)}">Copy</button><button class="danger" data-revoke="${escapeHtml(share.id)}">Revoke</button></div></div>`).join('') : '<span class="hint">No active links</span>';
+      document.querySelector('#shares').innerHTML = status.shares.length ? status.shares.map((share) => {
+        const names = (share.guests || []).map((guest) => escapeHtml(guest.name)).join(', ');
+        const people = `${share.guestCount || 0}/${status.maxGuestsPerLink} connected${names ? `: ${names}` : ''}`;
+        return `<div class="share"><strong>${escapeHtml(share.browserSessionName)} · ${share.mode === 'view' ? 'View only' : 'Control'}</strong><small>${share.permanent ? 'Permanent until revoked' : `Expires ${new Date(share.expires).toLocaleString()}`} · ${people}</small><div class="share-actions"><button data-copy="${escapeHtml(share.url)}">Copy</button><button class="danger" data-revoke="${escapeHtml(share.id)}">Revoke</button></div></div>`;
+      }).join('') : '<span class="hint">No active links</span>';
       document.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
       document.querySelectorAll('[data-revoke]').forEach((b) => b.onclick = async () => { await api(`/api/shares/${encodeURIComponent(b.dataset.revoke)}`, { method: 'DELETE', body: '{}' }); refreshStatus(); });
     } catch { document.querySelector('#connection').textContent = 'Disconnected'; }
@@ -227,8 +232,10 @@ if (page === 'owner') {
 
 if (page === 'guest') {
   const viewerControls = startViewer(mode === 'control');
+  let guestAddress = null;
   if (mode === 'control') {
     const address = document.querySelector('#guest-address');
+    guestAddress = address;
     const browserAction = async (action, value) => {
       try { await api('/api/browser/action', { method: 'POST', body: JSON.stringify({ action, value, session: sessionId }) }); }
       catch (error) { alert(error.message); }
@@ -238,15 +245,18 @@ if (page === 'guest') {
     document.querySelectorAll('[data-guest-nav]').forEach((button) => button.addEventListener('click', () => browserAction(button.dataset.guestNav)));
     document.querySelector('#copy-remote').addEventListener('click', () => viewerControls.copySelection().catch((error) => alert(error.message)));
     document.querySelector('#paste-remote').addEventListener('click', () => viewerControls.pasteLocal().catch((error) => alert(`Clipboard access failed: ${error.message}`)));
-    const refreshGuestStatus = async () => {
-      try {
-        const status = await api(`/api/s/${encodeURIComponent(sessionId)}/status`);
-        if (document.activeElement !== address) address.value = status.browserUrl || '';
-      } catch {}
-    };
-    refreshGuestStatus();
-    setInterval(refreshGuestStatus, 2500);
   }
+  const refreshGuestStatus = async () => {
+    try {
+      const status = await api(`/api/s/${encodeURIComponent(sessionId)}/status`);
+      if (guestAddress && document.activeElement !== guestAddress) guestAddress.value = status.browserUrl || '';
+      const names = (status.guests || []).map((guest) => guest.name).join(', ');
+      const role = mode === 'control' ? 'Controllers' : 'Viewers';
+      document.querySelector('#guest-presence').textContent = `${role} ${status.guestCount}/${status.maxGuestsPerLink}${names ? `: ${names}` : ''}`;
+    } catch {}
+  };
+  refreshGuestStatus();
+  setInterval(refreshGuestStatus, 2500);
   document.querySelector('#guest-logout').addEventListener('click', async () => {
     await api(`/api/s/${encodeURIComponent(sessionId)}/logout`, { method: 'POST', body: '{}' }).catch(() => {});
     location.reload();

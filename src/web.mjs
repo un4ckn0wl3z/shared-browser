@@ -27,13 +27,14 @@ export function ownerPage() {
     <label><span><input name="permanent" type="checkbox"> Permanent — valid until revoked</span></label>
     <label>Mode<select name="mode"><option value="control">Control</option><option value="view">View only</option></select></label>
     <button>Create link</button></form><div id="share-result"></div>
-    <h2>Active links</h2><div id="shares" class="shares"></div><p class="hint">Only one guest can be connected to each link. Press Revoke to disconnect it.</p></aside></main>`);
+    <h2>Active links</h2><div id="shares" class="shares"></div><p class="hint">Multiple guests can share one link. Everyone on a Control link can send input; the latest input wins. Press Revoke to disconnect everyone.</p></aside></main>`);
 }
 
 export function guestLoginPage(sessionId, mode) {
   return shell('Session Share — Sign in', 'guest-login', `
   <main class="card narrow"><h1>Shared browser</h1><p>This link grants <strong>${mode === 'view' ? 'view-only' : 'control'}</strong> access to a browser session.</p>
-  <form id="guest-login"><label>Access password<input name="password" type="password" autocomplete="current-password" required autofocus></label>
+  <form id="guest-login"><label>Your display name<input name="name" maxlength="40" autocomplete="nickname" required autofocus></label>
+  <label>Access password<input name="password" type="password" autocomplete="current-password" required></label>
   <button>Connect</button><p id="message" class="message"></p></form></main>`, `data-session-id="${sessionId}"`);
 }
 
@@ -43,7 +44,7 @@ export function guestPage(sessionId, mode) {
     <input id="guest-address" value="" placeholder="https://example.com/" aria-label="Address"><button id="guest-go">Go</button><button id="copy-remote" class="subtle">Copy selection</button><button id="paste-remote" class="subtle">Paste</button>
   </section>` : '';
   return shell('Session Share — Browser', 'guest', `
-  <header><strong>Shared browser</strong><span>${mode === 'view' ? 'View only' : 'Control enabled'}</span><button id="guest-logout" class="subtle">Disconnect</button></header>
+  <header><strong>Shared browser</strong><span id="guest-presence">${mode === 'view' ? 'View only' : 'Control enabled'} · connecting…</span><button id="guest-logout" class="subtle">Disconnect</button></header>
   ${controls}
   <main class="guest-main"><div id="viewer" class="viewer" tabindex="0"><img id="screen" alt="Remote browser"><div id="viewer-status">Connecting…</div></div>
   <p class="hint">Everything you do is performed in the browser running on the host server.</p></main>`, `data-session-id="${sessionId}" data-mode="${mode}"`);

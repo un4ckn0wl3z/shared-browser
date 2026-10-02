@@ -116,7 +116,7 @@ Do not expose plain HTTP to the public internet.
 6. Send the generated link and password separately.
 7. Revoke the link when finished.
 
-Only one guest may use a particular link at a time. A disconnected guest slot is released after 30 seconds. Share links, including permanent links, are stored in `data/shares.json` and survive server restarts.
+Multiple guests may use the same link at once. Each guest supplies a display name, and active names/counts appear in both the owner panel and guest page. On Control links, concurrent input uses last-input-wins behavior. Inactive guests stop counting as connected after 30 seconds. Share links, including permanent links, are stored in `data/shares.json` and survive server restarts.
 
 Control-mode guests have an address bar and may navigate to any HTTPS website. They can use **Paste** or Ctrl/Cmd+V to insert text from their local clipboard into the focused remote field. After selecting text in the remote page, **Copy selection** or Ctrl/Cmd+C copies it to their local clipboard. Clipboard APIs require localhost or a public HTTPS URL; plain public HTTP will normally be rejected by the guest browser.
 
@@ -134,6 +134,7 @@ Deleting a browser session stops its Chromium process and revokes its share link
 | `CHROME_BIN` | Auto-detected | Absolute Chrome/Chromium executable |
 | `CHROME_DEBUG_PORT` | `19222` | Local DevTools port |
 | `MAX_BROWSER_SESSIONS` | `5` | Maximum independent Chromium sessions (hard limit 20) |
+| `MAX_GUESTS_PER_LINK` | `20` | Maximum simultaneously active guests on one share link (hard limit 100) |
 | `INITIAL_URL` | Facebook | Initial browser page |
 | `DATA_DIR` | `./data` | Persistent profile directory |
 | `HEADLESS` | `0` | Set to `1` on a headless Linux server |
