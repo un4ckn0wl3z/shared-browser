@@ -20,12 +20,24 @@ case "$(uname -m)" in
     ;;
 esac
 
-for command_name in node wget unzip; do
+for command_name in wget unzip; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Required command is missing: $command_name" >&2
     exit 1
   fi
 done
+
+NODE_BIN=${NODE_BIN:-}
+if [ -z "$NODE_BIN" ] && command -v node >/dev/null 2>&1; then
+  NODE_BIN=$(command -v node)
+fi
+if [ -z "$NODE_BIN" ] && [ -x "$RUNTIME_ROOT/node/bin/node" ]; then
+  NODE_BIN="$RUNTIME_ROOT/node/bin/node"
+fi
+if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+  echo "Node.js was not found. Run ./download-node.sh first." >&2
+  exit 1
+fi
 
 CHROME_BIN_PATH="$RUNTIME_ROOT/$ARCHIVE_DIR/chrome"
 if [ -x "$CHROME_BIN_PATH" ] && [ "${1:-}" != "--force" ]; then
@@ -41,7 +53,7 @@ EXTRACT_DIR="$RUNTIME_ROOT/extract.tmp"
 echo "Resolving the current Stable Chrome for Testing build…" >&2
 wget -qO "$METADATA_FILE" "$METADATA_URL"
 
-CHROME_URL=$(node -e '
+CHROME_URL=$("$NODE_BIN" -e '
   const fs = require("node:fs");
   const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   const platform = process.argv[2];
