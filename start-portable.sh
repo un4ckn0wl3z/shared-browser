@@ -3,6 +3,13 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 NODE_BIN=$("$SCRIPT_DIR/download-node.sh")
+
+if [ "${BROWSER_ENABLED:-1}" = "0" ]; then
+  echo "Browser mode is disabled; starting API-only server…" >&2
+  cd "$SCRIPT_DIR"
+  exec "$NODE_BIN" src/server.mjs
+fi
+
 CHROME_BIN=$(NODE_BIN="$NODE_BIN" "$SCRIPT_DIR/download-chrome.sh")
 
 CHROME_OK=0

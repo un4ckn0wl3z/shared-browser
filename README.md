@@ -122,6 +122,28 @@ Control-mode guests have an address bar and may navigate to any HTTPS website. T
 
 Deleting a browser session stops its Chromium process and revokes its share links, but intentionally retains its profile directory under `data/browser-profiles/` for manual recovery. The Default session cannot be deleted.
 
+## GitHub API mode
+
+GitHub API links provide a repository-focused interface without streaming a browser or exposing GitHub credentials to guests. View-only links can read repository metadata, open issues, and pull requests. Control links can also create issues and comments. Write actions are recorded as JSON lines in `data/audit.log` with the guest display name.
+
+Create and install a GitHub App on the account or organization that owns the repositories:
+
+1. Grant repository **Issues: Read and write** and **Pull requests: Read and write** permissions. Metadata read permission is included automatically.
+2. Install the app only on the repositories that should be shareable.
+3. Generate and download a private key (`.pem`).
+4. Start the server with the App ID and absolute private-key path. If the app has multiple installations, also provide the installation ID.
+
+```bash
+GITHUB_APP_ID='123456' \
+GITHUB_INSTALLATION_ID='789012' \
+GITHUB_PRIVATE_KEY_PATH='/home/user/secrets/shared-browser-app.pem' \
+BROWSER_ENABLED=0 HOST=0.0.0.0 ./start-portable.sh
+```
+
+The GitHub App installation token is generated and refreshed only on the server. It is never returned to a guest. In the owner panel, select **GitHub API**, enter a repository as `owner/name`, and create a View-only or Control link.
+
+`BROWSER_ENABLED=0` runs GitHub API mode without downloading or starting Chrome. Omit it to run browser and GitHub modes together.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -135,6 +157,11 @@ Deleting a browser session stops its Chromium process and revokes its share link
 | `CHROME_DEBUG_PORT` | `19222` | Local DevTools port |
 | `MAX_BROWSER_SESSIONS` | `5` | Maximum independent Chromium sessions (hard limit 20) |
 | `MAX_GUESTS_PER_LINK` | `20` | Maximum simultaneously active guests on one share link (hard limit 100) |
+| `GITHUB_APP_ID` | Empty | GitHub App ID; enables GitHub API share mode when paired with a private key |
+| `GITHUB_INSTALLATION_ID` | Auto if exactly one | GitHub App installation to use |
+| `GITHUB_PRIVATE_KEY_PATH` | Empty | Absolute path to the GitHub App private key PEM file |
+| `GITHUB_API_VERSION` | `2026-03-10` | GitHub REST API version header |
+| `BROWSER_ENABLED` | `1` | Set to `0` for API-only mode without Chrome |
 | `INITIAL_URL` | Facebook | Initial browser page |
 | `DATA_DIR` | `./data` | Persistent profile directory |
 | `HEADLESS` | `0` | Set to `1` on a headless Linux server |
@@ -152,5 +179,6 @@ Deleting a browser session stops its Chromium process and revokes its share link
 - Guest and owner cookies are `HttpOnly` and `SameSite=Strict`; `Secure` is added when the reverse proxy sends `X-Forwarded-Proto: https`.
 - Downloads are denied. Control-mode guests may open any HTTPS URL; `ALLOWED_HOSTS` provides domains that are pre-authorized before an owner or guest explicitly navigates to them.
 - Permanent share links remain valid across server restarts until the owner revokes them. Treat both the URL and its password as sensitive credentials.
+- GitHub mode exposes only fixed repository, issue, and comment operations. Provider tokens and arbitrary GitHub API proxying are not exposed to clients.
 - This MVP streams JPEG images over repeated HTTP requests. For many concurrent users or video-heavy pages, replace the frame transport with WebRTC and operate a TURN service.
 - Protect the host and the `data` directory. Anyone who obtains the browser profile may be able to access the logged-in account.

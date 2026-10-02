@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
 import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CdpBrowser, findChrome } from './cdp-browser.mjs';
-import { guestLoginPage, guestPage, ownerLoginPage, ownerPage } from './web.mjs';
+import { GitHubApiError, GitHubBroker, normalizeRepository } from './github-api.mjs';
+import { githubGuestPage, guestLoginPage, guestPage, ownerLoginPage, ownerPage } from './web.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const root = resolve(here, '..');
@@ -14,6 +15,7 @@ mkdirSync(dataDir, { recursive: true });
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 17890);
 const debugPort = Number(process.env.CHROME_DEBUG_PORT || 19222);
+const browserEnabled = process.env.BROWSER_ENABLED !== '0';
 const initialUrl = process.env.INITIAL_URL || 'https://www.facebook.com/';
 const maxBrowserSessions = Math.min(20, Math.max(1, Number(process.env.MAX_BROWSER_SESSIONS || 5)));
 const configuredMaxGuests = Number(process.env.MAX_GUESTS_PER_LINK || 20);
@@ -29,6 +31,8 @@ const authAttempts = new Map();
 const browsers = new Map();
 const browserConfigPath = join(dataDir, 'browser-sessions.json');
 const shareConfigPath = join(dataDir, 'shares.json');
+const auditLogPath = join(dataDir, 'audit.log');
+const github = new GitHubBroker();
 let browserConfigs = [];
 let shuttingDown = false;
 
@@ -52,12 +56,17 @@ function loadShares() {
       const salt = Buffer.from(String(item.salt || ''), 'base64');
       const hash = Buffer.from(String(item.hash || ''), 'base64');
       if (!/^[A-Za-z0-9_-]{20,}$/.test(String(item.id || ''))) continue;
-      if (!browserConfigs.some((config) => config.id === item.browserSessionId)) continue;
+      const targetType = item.targetType === 'github' ? 'github' : 'browser';
+      const repository = targetType === 'github' ? normalizeRepository(item.repository) : null;
+      if (targetType === 'browser' && !browserConfigs.some((config) => config.id === item.browserSessionId)) continue;
+      if (targetType === 'github' && !repository) continue;
       if (expires !== null && (!Number.isFinite(expires) || expires <= Date.now())) continue;
       if (salt.length !== 16 || hash.length !== 32) continue;
       shares.set(item.id, {
         mode: item.mode === 'view' ? 'view' : 'control',
-        browserSessionId: item.browserSessionId,
+        targetType,
+        browserSessionId: targetType === 'browser' ? item.browserSessionId : null,
+        repository,
         expires,
         salt,
         hash,
@@ -76,7 +85,9 @@ function saveShares() {
     .map(([id, share]) => ({
       id,
       mode: share.mode,
+      targetType: share.targetType,
       browserSessionId: share.browserSessionId,
+      repository: share.repository,
       expires: share.expires,
       salt: share.salt.toString('base64'),
       hash: share.hash.toString('base64')
@@ -85,6 +96,13 @@ function saveShares() {
 }
 function browserProfileDir(id) {
   return id === 'default' ? join(dataDir, 'browser-profile') : join(dataDir, 'browser-profiles', id);
+}
+function audit(entry) {
+  try {
+    appendFileSync(auditLogPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...entry })}\n`, { mode: 0o600 });
+  } catch (error) {
+    console.error(`Could not write audit log: ${error.message}`);
+  }
 }
 function addOwnerAllowedHost(browser, urlValue) {
   try {
@@ -97,6 +115,13 @@ function json(res, status, payload, headers = {}) {
   const body = payload === null ? '' : JSON.stringify(payload);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(body);
+}
+function githubFailure(res, error) {
+  if (error instanceof GitHubApiError) {
+    const status = [400, 403, 404, 409, 422, 503].includes(error.status) ? error.status : 502;
+    return json(res, status, { error: error.message });
+  }
+  throw error;
 }
 function html(res, status, body) {
   res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'" });
@@ -183,7 +208,7 @@ function authFailed(key) {
 function authSucceeded(key) { authAttempts.delete(key); }
 function hasActiveGuest(browserSessionId) {
   const now = Date.now();
-  return [...shares.values()].some((share) => share.browserSessionId === browserSessionId && !share.revoked && (share.expires === null || share.expires > now) && activeGuestSummaries(share, now).length > 0);
+  return [...shares.values()].some((share) => share.targetType === 'browser' && share.browserSessionId === browserSessionId && !share.revoked && (share.expires === null || share.expires > now) && activeGuestSummaries(share, now).length > 0);
 }
 function allowed(browser, urlValue) {
   try {
@@ -269,7 +294,8 @@ async function route(req, res) {
       const active = [...shares.entries()].filter(([, share]) => !share.revoked && (share.expires === null || share.expires > now)).map(([id, share]) => {
         const guests = activeGuestSummaries(share, now);
         return {
-          id, mode: share.mode, expires: share.expires, permanent: share.expires === null, browserSessionId: share.browserSessionId,
+          id, mode: share.mode, targetType: share.targetType, repository: share.repository, expires: share.expires, permanent: share.expires === null, browserSessionId: share.browserSessionId,
+          targetName: share.targetType === 'github' ? `GitHub · ${share.repository}` : browserConfigs.find((item) => item.id === share.browserSessionId)?.name || share.browserSessionId,
           browserSessionName: browserConfigs.find((item) => item.id === share.browserSessionId)?.name || share.browserSessionId,
           connected: guests.length > 0, guestCount: guests.length, guests, url: `${publicBase(req)}/s/${id}`
         };
@@ -278,10 +304,11 @@ async function route(req, res) {
         const instance = browsers.get(config.id);
         return { id: config.id, name: config.name, initialUrl: config.initialUrl, browserUrl: instance?.currentUrl || null, connected: Boolean(instance?.socket && instance.socket.readyState === WebSocket.OPEN) };
       });
-      return json(res, 200, { browserConnected: sessions.some((item) => item.connected), sessions, shares: active, maxBrowserSessions, maxGuestsPerLink });
+      return json(res, 200, { browserEnabled, browserConnected: sessions.some((item) => item.connected), sessions, shares: active, maxBrowserSessions, maxGuestsPerLink, githubConfigured: github.configured });
     }
     if (req.method === 'POST' && path === '/api/browser-sessions') {
       if (!ownerAuthorized(req)) return json(res, 401, { error: 'Unauthorized' });
+      if (!browserEnabled) return json(res, 503, { error: 'Browser mode is disabled on this server' });
       if (browserConfigs.length >= maxBrowserSessions) return json(res, 409, { error: `Maximum browser sessions reached (${maxBrowserSessions})` });
       const input = await body(req);
       const name = String(input.name || '').trim().slice(0, 50);
@@ -320,13 +347,19 @@ async function route(req, res) {
       const minutes = Math.min(1440, Math.max(1, Number(input.minutes) || 30));
       const permanent = input.permanent === true || input.permanent === 'true' || input.permanent === 'on';
       const mode = input.mode === 'view' ? 'view' : 'control';
-      const browserSessionId = String(input.browserSession || '');
+      const targetType = input.targetType === 'github' ? 'github' : 'browser';
+      const browserSessionId = targetType === 'browser' ? String(input.browserSession || '') : null;
+      const repository = targetType === 'github' ? normalizeRepository(input.repository) : null;
       if (password.length < 6) return json(res, 400, { error: 'Guest password must contain at least 6 characters' });
-      if (!browsers.has(browserSessionId)) return json(res, 400, { error: 'Select a running browser session' });
+      if (targetType === 'browser' && !browsers.has(browserSessionId)) return json(res, 400, { error: 'Select a running browser session' });
+      if (targetType === 'github') {
+        if (!repository) return json(res, 400, { error: 'Enter a GitHub repository as owner/name' });
+        try { await github.overview(repository); } catch (error) { return githubFailure(res, error); }
+      }
       const id = randomBytes(24).toString('base64url');
-      shares.set(id, { ...passwordRecord(password), mode, browserSessionId, expires: permanent ? null : Date.now() + minutes * 60000, revoked: false, guests: new Map() });
+      shares.set(id, { ...passwordRecord(password), mode, targetType, browserSessionId, repository, expires: permanent ? null : Date.now() + minutes * 60000, revoked: false, guests: new Map() });
       saveShares();
-      return json(res, 201, { id, mode, expires: shares.get(id).expires, permanent, url: `${publicBase(req)}/s/${id}` });
+      return json(res, 201, { id, mode, targetType, repository, expires: shares.get(id).expires, permanent, url: `${publicBase(req)}/s/${id}` });
     }
     const deleteMatch = path.match(/^\/api\/shares\/([A-Za-z0-9_-]+)$/);
     if (req.method === 'DELETE' && deleteMatch) {
@@ -339,7 +372,9 @@ async function route(req, res) {
     if (req.method === 'GET' && sharePageMatch) {
       const share = liveShare(sharePageMatch[1]);
       if (!share) return html(res, 410, '<!doctype html><meta charset="utf-8"><title>Link expired</title><h1>This link has expired or was revoked.</h1>');
-      return html(res, 200, guestAuthorized(req, sharePageMatch[1]) ? guestPage(sharePageMatch[1], share.mode) : guestLoginPage(sharePageMatch[1], share.mode));
+      const authorized = guestAuthorized(req, sharePageMatch[1]);
+      if (!authorized) return html(res, 200, guestLoginPage(sharePageMatch[1], share.mode, share.targetType, share.repository));
+      return html(res, 200, share.targetType === 'github' ? githubGuestPage(sharePageMatch[1], share.mode, share.repository) : guestPage(sharePageMatch[1], share.mode));
     }
     const loginMatch = path.match(/^\/api\/s\/([A-Za-z0-9_-]+)\/login$/);
     if (req.method === 'POST' && loginMatch) {
@@ -372,10 +407,52 @@ async function route(req, res) {
     if (req.method === 'GET' && guestStatusMatch) {
       const share = guestAuthorized(req, guestStatusMatch[1]);
       if (!share) return json(res, 401, { error: 'Unauthorized' });
+      const guests = activeGuestSummaries(share);
+      if (share.targetType === 'github') return json(res, 200, { targetType: 'github', repository: share.repository, mode: share.mode, guestCount: guests.length, guests, maxGuestsPerLink });
       const instance = browsers.get(share.browserSessionId);
       if (!instance) return json(res, 404, { error: 'Browser session not found' });
-      const guests = activeGuestSummaries(share);
-      return json(res, 200, { browserUrl: instance.currentUrl, mode: share.mode, guestCount: guests.length, guests, maxGuestsPerLink });
+      return json(res, 200, { targetType: 'browser', browserUrl: instance.currentUrl, mode: share.mode, guestCount: guests.length, guests, maxGuestsPerLink });
+    }
+    const githubOverviewMatch = path.match(/^\/api\/s\/([A-Za-z0-9_-]+)\/github\/overview$/);
+    if (req.method === 'GET' && githubOverviewMatch) {
+      const share = guestAuthorized(req, githubOverviewMatch[1]);
+      if (!share) return json(res, 401, { error: 'Unauthorized' });
+      if (share.targetType !== 'github') return json(res, 404, { error: 'GitHub mode is not enabled for this link' });
+      try { return json(res, 200, await github.overview(share.repository)); } catch (error) { return githubFailure(res, error); }
+    }
+    const githubIssuesMatch = path.match(/^\/api\/s\/([A-Za-z0-9_-]+)\/github\/issues$/);
+    if (req.method === 'POST' && githubIssuesMatch) {
+      const share = guestAuthorized(req, githubIssuesMatch[1]);
+      if (!share) return json(res, 401, { error: 'Unauthorized' });
+      if (share.targetType !== 'github') return json(res, 404, { error: 'GitHub mode is not enabled for this link' });
+      if (share.mode !== 'control') return json(res, 403, { error: 'This link is read-only' });
+      const input = await body(req);
+      const title = String(input.title || '').trim().slice(0, 256);
+      const issueBody = String(input.body || '').slice(0, 65536);
+      if (!title) return json(res, 400, { error: 'Issue title is required' });
+      try {
+        const result = await github.createIssue(share.repository, title, issueBody);
+        const guest = share.guests.get(parseCookies(req).ss_guest);
+        audit({ actor: guest?.name || 'unknown', action: 'github.issue.create', repository: share.repository, issue: result.number, shareId: githubIssuesMatch[1] });
+        return json(res, 201, { number: result.number, htmlUrl: result.html_url });
+      } catch (error) { return githubFailure(res, error); }
+    }
+    const githubCommentMatch = path.match(/^\/api\/s\/([A-Za-z0-9_-]+)\/github\/issues\/(\d+)\/comments$/);
+    if (req.method === 'POST' && githubCommentMatch) {
+      const share = guestAuthorized(req, githubCommentMatch[1]);
+      if (!share) return json(res, 401, { error: 'Unauthorized' });
+      if (share.targetType !== 'github') return json(res, 404, { error: 'GitHub mode is not enabled for this link' });
+      if (share.mode !== 'control') return json(res, 403, { error: 'This link is read-only' });
+      const input = await body(req);
+      const commentBody = String(input.body || '').trim().slice(0, 65536);
+      if (!commentBody) return json(res, 400, { error: 'Comment cannot be empty' });
+      const issueNumber = Number(githubCommentMatch[2]);
+      try {
+        const result = await github.createComment(share.repository, issueNumber, commentBody);
+        const guest = share.guests.get(parseCookies(req).ss_guest);
+        audit({ actor: guest?.name || 'unknown', action: 'github.comment.create', repository: share.repository, issue: issueNumber, commentId: result.id, shareId: githubCommentMatch[1] });
+        return json(res, 201, { id: result.id, htmlUrl: result.html_url });
+      } catch (error) { return githubFailure(res, error); }
     }
     if (req.method === 'GET' && path === '/api/frame') {
       const id = url.searchParams.get('session');
@@ -439,13 +516,13 @@ async function route(req, res) {
 }
 
 async function main() {
-  const executable = findChrome();
-  if (!executable) throw new Error('Chrome/Chromium was not found. Install Chromium or set CHROME_BIN to its absolute path.');
+  const executable = browserEnabled ? findChrome() : null;
+  if (browserEnabled && !executable) throw new Error('Chrome/Chromium was not found. Install Chromium or set CHROME_BIN to its absolute path.');
   browserConfigs = loadBrowserConfigs();
   saveBrowserConfigs();
   loadShares();
-  for (const config of browserConfigs) {
-    await launchBrowser(config);
+  if (browserEnabled) {
+    for (const config of browserConfigs) await launchBrowser(config);
   }
 
   const server = createServer(route);
@@ -455,7 +532,7 @@ async function main() {
     console.log(`\nSession Share Server is running`);
     console.log(`Owner console: http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}/`);
     console.log(`Owner password: ${ownerPassword}`);
-    console.log(`Chromium: ${executable}`);
+    console.log(`Chromium: ${browserEnabled ? executable : 'disabled (API-only mode)'}`);
     console.log(`Browser sessions: ${browsers.size}/${maxBrowserSessions}`);
     if (host !== '127.0.0.1' && host !== '::1') console.warn('WARNING: Public HTTP is not encrypted. Put this server behind HTTPS before sharing it.');
   });
