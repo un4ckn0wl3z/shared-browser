@@ -24,6 +24,7 @@ const shares = new Map();
 const authAttempts = new Map();
 const browsers = new Map();
 const browserConfigPath = join(dataDir, 'browser-sessions.json');
+const shareConfigPath = join(dataDir, 'shares.json');
 let browserConfigs = [];
 let shuttingDown = false;
 
@@ -36,6 +37,47 @@ function loadBrowserConfigs() {
 }
 function saveBrowserConfigs() {
   writeFileSync(browserConfigPath, `${JSON.stringify(browserConfigs, null, 2)}\n`, { mode: 0o600 });
+}
+function loadShares() {
+  if (!existsSync(shareConfigPath)) return;
+  try {
+    const loaded = JSON.parse(readFileSync(shareConfigPath, 'utf8'));
+    if (!Array.isArray(loaded)) throw new Error('expected an array');
+    for (const item of loaded) {
+      const expires = item.expires === null ? null : Number(item.expires);
+      const salt = Buffer.from(String(item.salt || ''), 'base64');
+      const hash = Buffer.from(String(item.hash || ''), 'base64');
+      if (!/^[A-Za-z0-9_-]{20,}$/.test(String(item.id || ''))) continue;
+      if (!browserConfigs.some((config) => config.id === item.browserSessionId)) continue;
+      if (expires !== null && (!Number.isFinite(expires) || expires <= Date.now())) continue;
+      if (salt.length !== 16 || hash.length !== 32) continue;
+      shares.set(item.id, {
+        mode: item.mode === 'view' ? 'view' : 'control',
+        browserSessionId: item.browserSessionId,
+        expires,
+        salt,
+        hash,
+        revoked: false,
+        guest: null
+      });
+    }
+  } catch (error) {
+    console.warn(`Could not load persistent share links: ${error.message}`);
+  }
+}
+function saveShares() {
+  const now = Date.now();
+  const persistent = [...shares.entries()]
+    .filter(([, share]) => !share.revoked && (share.expires === null || share.expires > now))
+    .map(([id, share]) => ({
+      id,
+      mode: share.mode,
+      browserSessionId: share.browserSessionId,
+      expires: share.expires,
+      salt: share.salt.toString('base64'),
+      hash: share.hash.toString('base64')
+    }));
+  writeFileSync(shareConfigPath, `${JSON.stringify(persistent, null, 2)}\n`, { mode: 0o600 });
 }
 function browserProfileDir(id) {
   return id === 'default' ? join(dataDir, 'browser-profile') : join(dataDir, 'browser-profiles', id);
@@ -91,7 +133,7 @@ function ownerAuthorized(req) {
 }
 function liveShare(id) {
   const share = shares.get(id);
-  if (!share || share.revoked || share.expires <= Date.now()) return null;
+  if (!share || share.revoked || (share.expires !== null && share.expires <= Date.now())) return null;
   return share;
 }
 function guestAuthorized(req, id, touch = true) {
@@ -124,7 +166,7 @@ function authFailed(key) {
 function authSucceeded(key) { authAttempts.delete(key); }
 function hasActiveGuest(browserSessionId) {
   const now = Date.now();
-  return [...shares.values()].some((share) => share.browserSessionId === browserSessionId && !share.revoked && share.expires > now && share.guest && now - share.guest.lastSeen < 30000);
+  return [...shares.values()].some((share) => share.browserSessionId === browserSessionId && !share.revoked && (share.expires === null || share.expires > now) && share.guest && now - share.guest.lastSeen < 30000);
 }
 function allowed(browser, urlValue) {
   try {
@@ -207,8 +249,8 @@ async function route(req, res) {
     if (req.method === 'GET' && path === '/api/status') {
       if (!ownerAuthorized(req)) return json(res, 401, { error: 'Unauthorized' });
       const now = Date.now();
-      const active = [...shares.entries()].filter(([, share]) => !share.revoked && share.expires > now).map(([id, share]) => ({
-        id, mode: share.mode, expires: share.expires, browserSessionId: share.browserSessionId,
+      const active = [...shares.entries()].filter(([, share]) => !share.revoked && (share.expires === null || share.expires > now)).map(([id, share]) => ({
+        id, mode: share.mode, expires: share.expires, permanent: share.expires === null, browserSessionId: share.browserSessionId,
         browserSessionName: browserConfigs.find((item) => item.id === share.browserSessionId)?.name || share.browserSessionId,
         connected: Boolean(share.guest && now - share.guest.lastSeen < 30000), url: `${publicBase(req)}/s/${id}`
       }));
@@ -240,9 +282,11 @@ async function route(req, res) {
       if (browserSessionId === 'default') return json(res, 400, { error: 'The Default browser session cannot be deleted' });
       const instance = browsers.get(browserSessionId);
       if (!instance) return json(res, 404, { error: 'Browser session not found' });
-      for (const share of shares.values()) {
-        if (share.browserSessionId === browserSessionId) { share.revoked = true; share.guest = null; }
+      let sharesChanged = false;
+      for (const [id, share] of shares.entries()) {
+        if (share.browserSessionId === browserSessionId) { shares.delete(id); sharesChanged = true; }
       }
+      if (sharesChanged) saveShares();
       await instance.stop();
       browsers.delete(browserSessionId);
       browserConfigs = browserConfigs.filter((item) => item.id !== browserSessionId);
@@ -254,19 +298,21 @@ async function route(req, res) {
       const input = await body(req);
       const password = String(input.password || '');
       const minutes = Math.min(1440, Math.max(1, Number(input.minutes) || 30));
+      const permanent = input.permanent === true || input.permanent === 'true' || input.permanent === 'on';
       const mode = input.mode === 'view' ? 'view' : 'control';
       const browserSessionId = String(input.browserSession || '');
       if (password.length < 6) return json(res, 400, { error: 'Guest password must contain at least 6 characters' });
       if (!browsers.has(browserSessionId)) return json(res, 400, { error: 'Select a running browser session' });
       const id = randomBytes(24).toString('base64url');
-      shares.set(id, { ...passwordRecord(password), mode, browserSessionId, expires: Date.now() + minutes * 60000, revoked: false, guest: null });
-      return json(res, 201, { id, mode, expires: shares.get(id).expires, url: `${publicBase(req)}/s/${id}` });
+      shares.set(id, { ...passwordRecord(password), mode, browserSessionId, expires: permanent ? null : Date.now() + minutes * 60000, revoked: false, guest: null });
+      saveShares();
+      return json(res, 201, { id, mode, expires: shares.get(id).expires, permanent, url: `${publicBase(req)}/s/${id}` });
     }
     const deleteMatch = path.match(/^\/api\/shares\/([A-Za-z0-9_-]+)$/);
     if (req.method === 'DELETE' && deleteMatch) {
       if (!ownerAuthorized(req)) return json(res, 401, { error: 'Unauthorized' });
-      const share = shares.get(deleteMatch[1]);
-      if (share) { share.revoked = true; share.guest = null; }
+      shares.delete(deleteMatch[1]);
+      saveShares();
       return json(res, 200, { ok: true });
     }
     const sharePageMatch = path.match(/^\/s\/([A-Za-z0-9_-]+)$/);
@@ -287,7 +333,8 @@ async function route(req, res) {
       if (share.guest && Date.now() - share.guest.lastSeen < 30000) return json(res, 409, { error: 'Another guest is already connected' });
       const token = randomBytes(32).toString('base64url');
       share.guest = { token, lastSeen: Date.now() };
-      return json(res, 200, { ok: true }, { 'set-cookie': cookie(req, 'ss_guest', token, Math.ceil((share.expires - Date.now()) / 1000)) });
+      const guestCookieSeconds = share.expires === null ? 12 * 60 * 60 : Math.max(1, Math.ceil((share.expires - Date.now()) / 1000));
+      return json(res, 200, { ok: true }, { 'set-cookie': cookie(req, 'ss_guest', token, guestCookieSeconds) });
     }
     const logoutMatch = path.match(/^\/api\/s\/([A-Za-z0-9_-]+)\/logout$/);
     if (req.method === 'POST' && logoutMatch) {
@@ -370,6 +417,7 @@ async function main() {
   if (!executable) throw new Error('Chrome/Chromium was not found. Install Chromium or set CHROME_BIN to its absolute path.');
   browserConfigs = loadBrowserConfigs();
   saveBrowserConfigs();
+  loadShares();
   for (const config of browserConfigs) {
     await launchBrowser(config);
   }

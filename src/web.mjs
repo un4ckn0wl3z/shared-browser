@@ -24,6 +24,7 @@ export function ownerPage() {
   <aside><h2>Create share link</h2><form id="create-share">
     <label>Guest password<input name="password" type="password" minlength="6" required></label>
     <label>Expires after<input name="minutes" type="number" value="30" min="1" max="1440" required><span>minutes</span></label>
+    <label><span><input name="permanent" type="checkbox"> Permanent — valid until revoked</span></label>
     <label>Mode<select name="mode"><option value="control">Control</option><option value="view">View only</option></select></label>
     <button>Create link</button></form><div id="share-result"></div>
     <h2>Active links</h2><div id="shares" class="shares"></div><p class="hint">Only one guest can be connected to each link. Press Revoke to disconnect it.</p></aside></main>`);

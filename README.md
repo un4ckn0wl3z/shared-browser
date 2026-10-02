@@ -112,11 +112,11 @@ Do not expose plain HTTP to the public internet.
 2. Enter the owner password printed by the process, or supplied through `OWNER_PASSWORD`.
 3. Use the Default streamed browser, or click **New session** to create another independent browser profile.
 4. Open any HTTPS website and log in. Domains explicitly opened by the owner are allowed for that session's guests.
-5. Enter a guest password, expiration, and `Control` or `View only` mode.
+5. Enter a guest password, expiration, and `Control` or `View only` mode. Select **Permanent** to keep the same link valid until it is revoked.
 6. Send the generated link and password separately.
 7. Revoke the link when finished.
 
-Only one guest may use a particular link at a time. A disconnected guest slot is released after 30 seconds.
+Only one guest may use a particular link at a time. A disconnected guest slot is released after 30 seconds. Share links, including permanent links, are stored in `data/shares.json` and survive server restarts.
 
 Control-mode guests have an address bar and may navigate to any HTTPS website. They can use **Paste** or Ctrl/Cmd+V to insert text from their local clipboard into the focused remote field. After selecting text in the remote page, **Copy selection** or Ctrl/Cmd+C copies it to their local clipboard. Clipboard APIs require localhost or a public HTTPS URL; plain public HTTP will normally be rejected by the guest browser.
 
@@ -146,10 +146,10 @@ Deleting a browser session stops its Chromium process and revokes its share link
 ## Security notes
 
 - DevTools binds only to `127.0.0.1`; never publish its port.
-- Guest passwords use scrypt with a random salt and are held only in memory.
+- Guest passwords use scrypt with a random salt. Only the salt and derived hash are persisted; plaintext passwords are not stored.
 - Owner and guest password attempts are rate-limited per source address.
 - Guest and owner cookies are `HttpOnly` and `SameSite=Strict`; `Secure` is added when the reverse proxy sends `X-Forwarded-Proto: https`.
 - Downloads are denied. Control-mode guests may open any HTTPS URL; `ALLOWED_HOSTS` provides domains that are pre-authorized before an owner or guest explicitly navigates to them.
-- Share links disappear on server restart, while the Chromium login profile persists.
+- Permanent share links remain valid across server restarts until the owner revokes them. Treat both the URL and its password as sensitive credentials.
 - This MVP streams JPEG images over repeated HTTP requests. For many concurrent users or video-heavy pages, replace the frame transport with WebRTC and operate a TURN service.
 - Protect the host and the `data` directory. Anyone who obtains the browser profile may be able to access the logged-in account.
