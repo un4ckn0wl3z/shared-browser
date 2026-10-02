@@ -1,0 +1,13 @@
+services:
+  session-share:
+    build: .
+    restart: unless-stopped
+    environment:
+      OWNER_PASSWORD: "change-this-owner-password"
+      INITIAL_URL: "https://www.facebook.com/"
+      ALLOWED_HOSTS: "facebook.com,fb.com,messenger.com,meta.com"
+    ports:
+      - "127.0.0.1:17890:17890"
+    volumes:
+      - ./data:/data
+    shm_size: "1gb"
