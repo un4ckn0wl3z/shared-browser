@@ -114,7 +114,13 @@ export class CdpBrowser {
       }
       await delay(250);
     }
-    if (!version) throw new Error(`Could not connect to Chromium DevTools: ${lastError?.message || 'no page target'}`);
+    if (!version) {
+      const detail = this.stderrTail.trim();
+      const sandboxHint = process.platform === 'linux' && process.env.CHROME_NO_SANDBOX !== '1'
+        ? '\nThis host may block the Chromium user-namespace sandbox. Retry with CHROME_NO_SANDBOX=1 only under a dedicated, restricted Linux user.'
+        : '';
+      throw new Error(`Could not connect to Chromium DevTools: ${lastError?.message || 'no page target'}${detail ? `\n${detail}` : ''}${sandboxHint}`);
+    }
 
     await this.connect(version.webSocketDebuggerUrl);
     await this.send('Page.enable');

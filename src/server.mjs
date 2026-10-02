@@ -154,7 +154,12 @@ async function launchBrowser(config) {
   });
   instance.ownerAllowedHosts = new Set();
   addOwnerAllowedHost(instance, config.initialUrl || initialUrl);
-  await instance.start();
+  try {
+    await instance.start();
+  } catch (error) {
+    await instance.stop();
+    throw error;
+  }
   instance.onUrl = async (url) => {
     if (!hasActiveGuest(config.id) || allowed(instance, url)) {
       if (allowed(instance, url)) instance.lastAllowedUrl = url;
