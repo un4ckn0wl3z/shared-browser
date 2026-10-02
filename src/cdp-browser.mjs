@@ -67,6 +67,7 @@ export class CdpBrowser {
     this.currentUrl = initialUrl;
     this.lastAllowedUrl = initialUrl;
     this.onUrl = null;
+    this.stderrTail = '';
   }
 
   async start() {
@@ -90,13 +91,17 @@ export class CdpBrowser {
     });
     this.process.stderr.on('data', (chunk) => {
       const line = chunk.toString();
-      if (/ERROR|FATAL/i.test(line) && process.env.DEBUG_BROWSER === '1') process.stderr.write(line);
+      this.stderrTail = `${this.stderrTail}${line}`.slice(-8000);
+      if (process.env.DEBUG_BROWSER === '1') process.stderr.write(line);
     });
 
     let version;
     let lastError;
     for (let attempt = 0; attempt < 80; attempt += 1) {
-      if (this.process.exitCode !== null) throw new Error(`Chromium exited with code ${this.process.exitCode}`);
+      if (this.process.exitCode !== null) {
+        const detail = this.stderrTail.trim();
+        throw new Error(`Chromium exited with code ${this.process.exitCode}${detail ? `\n${detail}` : ''}`);
+      }
       try {
         const response = await fetch(`http://127.0.0.1:${this.debuggingPort}/json/list`);
         if (response.ok) {
