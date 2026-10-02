@@ -19,7 +19,7 @@ If you cannot install Node.js or Chrome system-wide, use the rootless portable l
 ```bash
 git clone https://github.com/un4ckn0wl3z/shared-browser.git
 cd shared-browser
-chmod +x download-node.sh download-chrome.sh start-portable.sh
+chmod +x download-node.sh download-chrome.sh download-chrome-deps.sh start-portable.sh
 OWNER_PASSWORD='use-a-long-random-password' ./start-portable.sh
 ```
 
@@ -29,6 +29,8 @@ The launcher first resolves and downloads the current official Node.js LTS binar
 ./download-node.sh --force
 ./download-chrome.sh --force
 ```
+
+On Debian/Ubuntu, if Chrome is missing NSS/NSPR libraries, the launcher uses unprivileged `apt-get download` and `dpkg-deb -x` to place `libnspr4` and `libnss3` under `.runtime/chrome-deps/`; it does not install packages or modify system directories. Refresh those extracted libraries with `./download-chrome-deps.sh --force`.
 
 This does not require root and does not modify system directories. Chrome is not fully static, however: the host must already provide its Linux shared-library dependencies. If it fails to start, inspect missing libraries with:
 
