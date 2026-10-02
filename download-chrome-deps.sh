@@ -26,7 +26,7 @@ mkdir -p "$DEB_DIR" "$LIB_ROOT"
 echo "Downloading Chrome NSS/NSPR libraries without installing them…" >&2
 if (
   cd "$DEB_DIR"
-  apt-get download libnspr4 libnss3
+  apt-get download libnspr4 libnss3 >&2
 ); then
   :
 else
@@ -73,7 +73,7 @@ FOUND_DEB=0
 for archive in "$DEB_DIR"/*.deb; do
   if [ ! -f "$archive" ]; then continue; fi
   FOUND_DEB=1
-  dpkg-deb -x "$archive" "$LIB_ROOT"
+  dpkg-deb -x "$archive" "$LIB_ROOT" >&2
 done
 
 if [ "$FOUND_DEB" -ne 1 ]; then
